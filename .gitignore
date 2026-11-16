@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+app.py.backup
+app.py.before_gap_chart_fix.backup
+app.py.before_heading_fix.backup
+app.py.before_map_fix.backup
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local backup files
+*.backup

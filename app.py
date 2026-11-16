@@ -24,6 +24,8 @@ except ImportError:
 from typing import Dict, Any
 
 import data_generator
+from pathlib import Path
+from gps_processor import load_gps_dataset, get_track_summary
 from analysis import (
     PrototypeConfig,
     run_pipeline,
@@ -357,12 +359,14 @@ with col4:
 # -----------------------------------------------------------------------------
 # TABBED PRESENTATION SECTIONS
 # -----------------------------------------------------------------------------
-tab_overview, tab_pipeline, tab_charts, tab_data, tab_guide = st.tabs([
+tab_overview, tab_pipeline, tab_charts, tab_data, tab_guide, tab_gps, tab_hybrid = st.tabs([
     "🔍 Analysis & Reasoning",
     "🧠 Rule-Based Pipeline Stages (SNN/GNN Proxy)",
     "📈 Temporal & Kinematic Charts",
     "📋 Observation Data Table",
     "⏱️ 2-Minute Review Guide",
+    "Real Hiking GPS Explorer",
+    "Hybrid GPS + Communication Analysis",
 ])
 
 
@@ -653,7 +657,715 @@ with tab_guide:
     """)
 
 
+
+# =============================================================================
+# TAB 6: REAL HIKING GPS DATA EXPLORER
+# =============================================================================
+with tab_gps:
+    st.subheader("Real Hiking GPS Dataset Explorer")
+
+    st.success(
+        "REAL DATA: Actual GPS trajectories from the Balearic Islands "
+        "hiking dataset. Communication events are not included in these files."
+    )
+
+    st.markdown(
+        "Explore real recorded hiking routes, movement speed, distance "
+        "and elevation. GPS intervals with gaps over 10 minutes or "
+        "calculated speeds above 12 km/h are excluded from movement metrics."
+    )
+
+    gps_folder = Path(__file__).resolve().parent / "data" / "real_gps"
+
+    @st.cache_data
+    def get_real_tracks(folder):
+        return load_gps_dataset(folder)
+
+    try:
+        real_tracks = get_real_tracks(str(gps_folder))
+
+        if not real_tracks:
+            st.warning("No valid GPX files found in data/real_gps.")
+        else:
+            track_names = sorted(real_tracks.keys())
+
+            selected_track = st.selectbox(
+                "Select a real hiking GPS track:",
+                track_names
+            )
+
+            observations = real_tracks[selected_track]
+            summary = get_track_summary(observations)
+            gps_df = pd.DataFrame(observations)
+
+            st.caption(
+                f"Selected track: {selected_track} | "
+                f"{summary['gps_points']} recorded GPS points"
+            )
+
+            # Summary metrics
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric("Distance", f"{summary['distance_km']} km")
+            c2.metric(
+                "Active Duration",
+                f"{summary['active_duration_hours']} hrs"
+            )
+            c3.metric(
+                "Average Speed",
+                f"{summary['average_speed_kmh']} km/h"
+            )
+            c4.metric(
+                "Maximum Elevation",
+                f"{summary['elevation_max_m']} m"
+                if summary["elevation_max_m"] is not None
+                else "Unavailable"
+            )
+
+            c5, c6, c7 = st.columns(3)
+            c5.metric("GPS Points", summary["gps_points"])
+            c6.metric("Valid Intervals", summary["valid_intervals"])
+            c7.metric(
+                "Minimum Elevation",
+                f"{summary['elevation_min_m']} m"
+                if summary["elevation_min_m"] is not None
+                else "Unavailable"
+            )
+
+            st.markdown("---")
+            st.markdown("### Real GPS Route")
+
+            if HAS_PLOTLY:
+                route_fig = go.Figure()
+
+                gps_df = gps_df.reset_index(drop=True)
+
+                # Break the route wherever an interval is invalid or contains a long gap.
+                route_lat = []
+                route_lon = []
+
+                for i, row in gps_df.iterrows():
+                    if i > 0 and (
+                        not bool(row["valid_interval"])
+                        or bool(row["time_gap"])
+                    ):
+                        route_lat.append(None)
+                        route_lon.append(None)
+
+                    route_lat.append(row["latitude"])
+                    route_lon.append(row["longitude"])
+
+                lat_min = float(gps_df["latitude"].min())
+                lat_max = float(gps_df["latitude"].max())
+                lon_min = float(gps_df["longitude"].min())
+                lon_max = float(gps_df["longitude"].max())
+
+                lat_pad = max((lat_max - lat_min) * 0.15, 0.003)
+                lon_pad = max((lon_max - lon_min) * 0.15, 0.003)
+
+                route_fig.add_trace(go.Scattergeo(
+                    lat=route_lat,
+                    lon=route_lon,
+                    mode="lines",
+                    line=dict(color="#38bdf8", width=3),
+                    name="Recorded route",
+                    connectgaps=False
+                ))
+
+                route_fig.add_trace(go.Scattergeo(
+                    lat=gps_df["latitude"],
+                    lon=gps_df["longitude"],
+                    mode="markers",
+                    marker=dict(
+                        size=5,
+                        color=gps_df["speed_kmh"],
+                        colorscale="Viridis",
+                        cmin=0,
+                        colorbar=dict(
+                            title="Speed<br>(km/h)",
+                            x=1.02,
+                            len=0.75
+                        )
+                    ),
+                    name="GPS observations",
+                    showlegend=False,
+                    text=[
+                        f"Speed: {s:.2f} km/h<br>Elevation: {e} m"
+                        for s, e in zip(
+                            gps_df["speed_kmh"],
+                            gps_df["elevation"]
+                        )
+                    ],
+                    hoverinfo="text"
+                ))
+
+                route_fig.add_trace(go.Scattergeo(
+                    lat=[gps_df.iloc[0]["latitude"]],
+                    lon=[gps_df.iloc[0]["longitude"]],
+                    mode="markers",
+                    marker=dict(size=12, color="#22c55e", symbol="circle"),
+                    name="Start"
+                ))
+
+                route_fig.add_trace(go.Scattergeo(
+                    lat=[gps_df.iloc[-1]["latitude"]],
+                    lon=[gps_df.iloc[-1]["longitude"]],
+                    mode="markers",
+                    marker=dict(size=12, color="#ef4444", symbol="diamond"),
+                    name="End"
+                ))
+
+                route_fig.update_layout(
+                    title=f"GPS Trajectory: {selected_track}",
+                    geo=dict(
+                        projection_type="mercator",
+                        showland=True,
+                        landcolor="#f1e8c8",
+                        showcountries=True,
+                        lataxis=dict(
+                            range=[lat_min - lat_pad, lat_max + lat_pad]
+                        ),
+                        lonaxis=dict(
+                            range=[lon_min - lon_pad, lon_max + lon_pad]
+                        ),
+                        domain=dict(x=[0, 0.88], y=[0, 1])
+                    ),
+                    legend=dict(
+                        x=0.01,
+                        y=0.99,
+                        bgcolor="rgba(255,255,255,0.75)"
+                    ),
+                    height=550,
+                    margin=dict(l=10, r=110, t=60, b=10)
+                )
+                st.plotly_chart(
+                    route_fig,
+                    use_container_width=True
+                )
+
+                st.markdown("---")
+                st.markdown("### Movement Speed Over Time")
+
+                # Prepare chart data while preserving missing GPS intervals.
+                chart_rows = []
+                gps_df = gps_df.reset_index(drop=True)
+
+                for i, row in gps_df.iterrows():
+                    interval_valid = bool(row["valid_interval"])
+                    is_time_gap = bool(row["time_gap"])
+
+                    # Insert an explicit break before disconnected observations.
+                    if i > 0 and (not interval_valid or is_time_gap):
+                        chart_rows.append({
+                            "timestamp": row["timestamp"],
+                            "speed_kmh": None,
+                            "elevation": None
+                        })
+
+                    chart_rows.append({
+                        "timestamp": row["timestamp"],
+                        "speed_kmh": (
+                            row["speed_kmh"] if interval_valid and not is_time_gap
+                            else None
+                        ),
+                        "elevation": row["elevation"]
+                    })
+
+                chart_df = pd.DataFrame(chart_rows)
+
+                speed_df = chart_df.dropna(
+                    subset=["speed_kmh"]
+                )
+
+                if not speed_df.empty:
+                    speed_fig = px.line(
+                        chart_df,
+                        x="timestamp",
+                        y="speed_kmh",
+                        title="Filtered GPS Movement Speed",
+                        labels={
+                            "timestamp": "GPS Timestamp",
+                            "speed_kmh": "Speed (km/h)"
+                        }
+                    )
+                    speed_fig.update_traces(connectgaps=False)
+                    speed_fig.update_layout(height=350)
+                    st.plotly_chart(
+                        speed_fig,
+                        use_container_width=True
+                    )
+                else:
+                    st.info("No valid GPS movement intervals are available for this track.")
+
+                st.markdown("### Elevation Profile")
+
+                elevation_df = chart_df.dropna(
+                    subset=["elevation"]
+                )
+
+                if not elevation_df.empty:
+                    elevation_fig = px.line(
+                        chart_df,
+                        x="timestamp",
+                        y="elevation",
+                        title="Recorded Elevation Over Time",
+                        labels={
+                            "timestamp": "GPS Timestamp",
+                            "elevation": "Elevation (m)"
+                        }
+                    )
+                    elevation_fig.update_traces(connectgaps=False)
+                    elevation_fig.update_layout(height=350)
+                    st.plotly_chart(
+                        elevation_fig,
+                        use_container_width=True
+                    )
+                else:
+                    st.info("No elevation observations are available for this track.")
+
+                gap_count = int(gps_df["time_gap"].fillna(False).astype(bool).sum())
+                invalid_count = int(
+                    (~gps_df["valid_interval"].fillna(False).astype(bool)).sum()
+                )
+
+                st.caption(
+                    f"Chart handling: {gap_count} long GPS gaps and "
+                    f"{invalid_count} invalid intervals are represented as "
+                    "discontinuities rather than continuous movement."
+                )
+            else:
+                st.warning(
+                    "Plotly is unavailable. Install the project "
+                    "requirements to enable route visualisation."
+                )
+
+            st.markdown("---")
+            st.markdown("### GPS Observation Records")
+
+            st.dataframe(
+                gps_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.markdown("### Data Quality Information")
+            st.write(
+                f"- Long time gaps excluded: {summary['time_gaps']}"
+            )
+            st.write(
+                f"- Other rejected intervals: "
+                f"{summary['rejected_intervals']}"
+            )
+            st.write(
+                "- Filtering assumptions: maximum 10-minute interval "
+                "and maximum 12 km/h calculated speed."
+            )
+
+            st.info(
+                "Research limitation: These are real individual hiking "
+                "trajectories. They do not contain actual RF link quality, "
+                "synchronised group check-ins, or labelled emergencies. "
+                "Do not interpret rejected GPS intervals as emergencies."
+            )
+
+    except Exception as error:
+        st.error(f"Could not load real GPS data: {error}")
+
+
 # -----------------------------------------------------------------------------
+
+# =============================================================================
+# TAB 7: HYBRID REAL GPS + SIMULATED COMMUNICATION ANALYSIS
+# =============================================================================
+with tab_hybrid:
+    st.subheader("Hybrid GPS + Communication Analysis")
+
+    st.info(
+        "DATA PROVENANCE: GPS coordinates, timestamps and elevation come "
+        "from recorded GPX tracks. Check-in events and RF link quality are "
+        "simulated experimental inputs. The four hikers share one recorded "
+        "route context; they do not represent four independently tracked people."
+    )
+
+    hybrid_folder = Path(__file__).resolve().parent / "data" / "hybrid"
+
+    hybrid_files = sorted(
+        hybrid_folder.glob("10799_*.csv")
+    ) if hybrid_folder.exists() else []
+
+    if not hybrid_files:
+        st.warning(
+            "No hybrid datasets found. Run hybrid_data_generator.py "
+            "to generate the experimental CSV files."
+        )
+    else:
+        selected_hybrid_file = st.selectbox(
+            "Select communication scenario",
+            hybrid_files,
+            format_func=lambda file: file.stem.replace(
+                "10799_", ""
+            ).replace("_", " ").title()
+        )
+
+        hybrid_df = pd.read_csv(selected_hybrid_file)
+
+        required_hybrid_columns = [
+            "scheduled_timestamp",
+            "hiker_id",
+            "latitude",
+            "longitude",
+            "elevation_m",
+            "simulated_checkin_received",
+            "simulated_link_quality",
+            "gps_match_available",
+            "gps_source_type",
+            "communication_source_type",
+        ]
+
+        missing_hybrid_columns = [
+            column for column in required_hybrid_columns
+            if column not in hybrid_df.columns
+        ]
+
+        if missing_hybrid_columns:
+            st.error(
+                f"Hybrid dataset is missing columns: {missing_hybrid_columns}"
+            )
+        else:
+            hybrid_df["scheduled_timestamp"] = pd.to_datetime(
+                hybrid_df["scheduled_timestamp"],
+                errors="coerce"
+            )
+
+            hybrid_df["simulated_checkin_received"] = (
+                hybrid_df["simulated_checkin_received"]
+                .astype(str)
+                .str.lower()
+                .map({"true": True, "false": False, "1": True, "0": False})
+            )
+
+            hybrid_df["simulated_link_quality"] = pd.to_numeric(
+                hybrid_df["simulated_link_quality"],
+                errors="coerce"
+            )
+
+            matched_gps = hybrid_df[
+                hybrid_df["gps_match_available"].astype(str).str.lower() == "true"
+            ].copy()
+
+            unmatched_gps = len(hybrid_df) - len(matched_gps)
+
+            missed_checkins = int(
+                (hybrid_df["simulated_checkin_received"] == False).sum()
+            )
+
+            unique_gps_times = (
+                matched_gps["gps_timestamp"].nunique()
+                if "gps_timestamp" in matched_gps.columns
+                else 0
+            )
+
+            metric1, metric2, metric3, metric4 = st.columns(4)
+
+            metric1.metric("Event records", len(hybrid_df))
+            metric2.metric("Matched GPS time points", unique_gps_times)
+            metric3.metric("Unmatched records", unmatched_gps)
+            metric4.metric("Simulated missed check-ins", missed_checkins)
+
+            st.markdown("---")
+            st.markdown("### Simulated Check-in Timeline")
+
+            # Arrange check-in events as a hiker-by-time matrix.
+            checkin_matrix = hybrid_df.pivot(
+                index="hiker_id",
+                columns="scheduled_timestamp",
+                values="simulated_checkin_received"
+            ).sort_index()
+
+            checkin_matrix = checkin_matrix.reindex(
+                ["H1", "H2", "H3", "H4"]
+            )
+
+            checkin_values = checkin_matrix.astype(float).values
+
+            checkin_text = checkin_matrix.map(
+                lambda value: (
+                    "Received" if pd.notna(value) and bool(value)
+                    else "Missed" if pd.notna(value)
+                    else "No data"
+                )
+            ).values
+
+            checkin_times = [
+                pd.Timestamp(timestamp).strftime("%H:%M")
+                for timestamp in checkin_matrix.columns
+            ]
+
+            checkin_fig = go.Figure(
+                data=go.Heatmap(
+                    z=checkin_values,
+                    x=checkin_times,
+                    y=checkin_matrix.index.tolist(),
+                    text=checkin_text,
+                    texttemplate="%{text}",
+                    colorscale=[
+                        [0.0, "#dc2626"],
+                        [0.499, "#dc2626"],
+                        [0.5, "#16a34a"],
+                        [1.0, "#16a34a"]
+                    ],
+                    zmin=0,
+                    zmax=1,
+                    showscale=False,
+                    xgap=3,
+                    ygap=5,
+                    hovertemplate=(
+                        "Hiker: %{y}<br>"
+                        "Scheduled time: %{x}<br>"
+                        "Status: %{text}"
+                        "<extra></extra>"
+                    )
+                )
+            )
+
+            checkin_fig.update_layout(
+                title="Simulated Check-in Status — Hiker vs Time",
+                xaxis_title="Scheduled Check-in Time",
+                yaxis_title="Simulated Hiker",
+                height=380,
+                xaxis=dict(tickangle=-45),
+                yaxis=dict(autorange="reversed")
+            )
+
+            st.plotly_chart(
+                checkin_fig,
+                width="stretch"
+            )
+
+            st.caption(
+                "All check-in events shown above are simulated. "
+                "They are not measurements from the GPX dataset."
+            )
+
+            st.markdown("---")
+            st.markdown("### Simulated RF Link Quality")
+
+            link_fig = px.line(
+                hybrid_df,
+                x="scheduled_timestamp",
+                y="simulated_link_quality",
+                color="hiker_id",
+                markers=True,
+                title="Simulated Link Quality by Hiker",
+                labels={
+                    "scheduled_timestamp": "Scheduled Time",
+                    "simulated_link_quality": "Simulated Link Quality",
+                    "hiker_id": "Simulated Hiker"
+                }
+            )
+
+            link_fig.update_yaxes(range=[0, 1])
+            link_fig.update_layout(height=400)
+            st.plotly_chart(link_fig, use_container_width=True)
+
+            st.caption(
+                "RF link quality is synthetically generated for controlled "
+                "experiments. It is not measured radio signal strength."
+            )
+
+            st.markdown("---")
+            st.markdown("### Recorded GPS Route Context")
+
+            if not matched_gps.empty:
+                gps_unique = (
+                    matched_gps.sort_values("gps_timestamp")
+                    .drop_duplicates(subset=["gps_timestamp"])
+                    .reset_index(drop=True)
+                )
+
+                gps_unique["gps_timestamp"] = pd.to_datetime(
+                    gps_unique["gps_timestamp"],
+                    utc=True,
+                    errors="coerce"
+                )
+
+                gps_unique["gps_break_before"] = False
+
+                if len(gps_unique) > 1:
+                    elapsed_seconds = (
+                        gps_unique["gps_timestamp"]
+                        .diff()
+                        .dt.total_seconds()
+                    )
+
+                    gps_unique["gps_break_before"] = (
+                        elapsed_seconds > 600
+                    )
+
+                if "gps_valid_interval" in gps_unique.columns:
+                    gps_unique["gps_break_before"] |= (
+                        ~gps_unique["gps_valid_interval"].astype(bool)
+                    )
+
+                if "gps_time_gap" in gps_unique.columns:
+                    gps_unique["gps_break_before"] |= (
+                        gps_unique["gps_time_gap"].astype(bool)
+                    )
+
+                route_fig = go.Figure()
+
+                # Preserve discontinuities in the recorded GPS trajectory.
+                route_lat = []
+                route_lon = []
+
+                for i, row in gps_unique.iterrows():
+                    if i > 0 and bool(row["gps_break_before"]):
+                        route_lat.append(None)
+                        route_lon.append(None)
+
+                    route_lat.append(row["latitude"])
+                    route_lon.append(row["longitude"])
+
+                route_fig.add_trace(go.Scattergeo(
+                    lat=route_lat,
+                    lon=route_lon,
+                    mode="lines+markers",
+                    line=dict(color="#0ea5e9", width=3),
+                    marker=dict(size=5, color="#0f766e"),
+                    name="Recorded GPS route",
+                    connectgaps=False
+                ))
+
+                route_fig.update_layout(
+                    title="Real Recorded Route — Shared Group Context",
+                    geo=dict(
+                        projection_type="mercator",
+                        showland=True,
+                        showcountries=True,
+                        lataxis=dict(
+                            range=[
+                                gps_unique["latitude"].min() - 0.005,
+                                gps_unique["latitude"].max() + 0.005
+                            ]
+                        ),
+                        lonaxis=dict(
+                            range=[
+                                gps_unique["longitude"].min() - 0.005,
+                                gps_unique["longitude"].max() + 0.005
+                            ]
+                        )
+                    ),
+                    height=450
+                )
+
+                st.plotly_chart(route_fig, use_container_width=True)
+
+                st.markdown("### Recorded Elevation Profile")
+
+                elevation_data = gps_unique.dropna(
+                    subset=["elevation_m"]
+                )
+
+                if not elevation_data.empty:
+                    # Insert missing values at GPS discontinuities.
+                    elevation_rows = []
+
+                    for i, row in elevation_data.iterrows():
+                        if i > 0 and bool(row["gps_break_before"]):
+                            elevation_rows.append({
+                                "gps_timestamp": row["gps_timestamp"],
+                                "elevation_m": None
+                            })
+
+                        elevation_rows.append({
+                            "gps_timestamp": row["gps_timestamp"],
+                            "elevation_m": row["elevation_m"]
+                        })
+
+                    elevation_chart_df = pd.DataFrame(elevation_rows)
+
+                    elevation_fig = px.line(
+                        elevation_chart_df,
+                        x="gps_timestamp",
+                        y="elevation_m",
+                        title="Recorded GPS Elevation",
+                        labels={
+                            "gps_timestamp": "GPS Timestamp",
+                            "elevation_m": "Elevation (m)"
+                        }
+                    )
+                    elevation_fig.update_traces(connectgaps=False)
+                    elevation_fig.update_layout(height=350)
+                    st.plotly_chart(
+                        elevation_fig,
+                        use_container_width=True
+                    )
+            else:
+                st.warning(
+                    "No matched GPS observations are available for this scenario."
+                )
+
+            st.markdown("---")
+            st.markdown("### Data Provenance")
+
+            provenance_df = pd.DataFrame([
+                {
+                    "Variable": "Latitude / Longitude",
+                    "Source": "Real recorded GPX",
+                    "Interpretation": "Recorded route coordinates"
+                },
+                {
+                    "Variable": "Elevation",
+                    "Source": "Real recorded GPX",
+                    "Interpretation": "Recorded route elevation"
+                },
+                {
+                    "Variable": "Movement speed",
+                    "Source": "Real recorded GPX",
+                    "Interpretation": "Speed between valid GPS observations"
+                },
+                {
+                    "Variable": "Check-in received",
+                    "Source": "Simulated",
+                    "Interpretation": "Synthetic communication event"
+                },
+                {
+                    "Variable": "RF link quality",
+                    "Source": "Simulated",
+                    "Interpretation": "Synthetic communication quality"
+                },
+                {
+                    "Variable": "Individual hiker location",
+                    "Source": "Unavailable",
+                    "Interpretation": "Not measured by this dataset"
+                },
+                {
+                    "Variable": "Emergency outcome",
+                    "Source": "Unavailable",
+                    "Interpretation": "No real emergency labels"
+                }
+            ])
+
+            st.dataframe(
+                provenance_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.markdown("### Hybrid Event Records")
+
+            st.dataframe(
+                hybrid_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.caption(
+                "This dashboard is an experimental data exploration tool. "
+                "It does not provide validated emergency detection or "
+                "real-world hiker safety predictions."
+            )
+
 # FOOTER
 # -----------------------------------------------------------------------------
 st.markdown("---")
